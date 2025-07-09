@@ -1,24 +1,88 @@
-import cv2
-import mediapipe as mp
-import numpy as np
-import plotly.graph_objects as go
-import networkx as nx
-import threading
-import time
-from collections import deque
 import math
-import dash
-from dash import dcc, html, Input, Output, callback
-import json
 import queue
+import socket
+import time
 import webbrowser
 from threading import Thread
-import socket
+
+import cv2
+import dash
+import mediapipe as mp
+import networkx as nx
+import numpy as np
+import plotly.graph_objects as go
+from dash import dcc, html, Input, Output
+
+
+def create_graph():
+    """Criar um grafo NetworkX 3D"""
+    # Criar grafo aleatório geométrico 3D
+    g = nx.random_geometric_graph(20, 0.3, dim=3)
+
+    # Garantir que as posições estejam definidas
+    pos = nx.get_node_attributes(g, 'pos')
+    for node, position in pos.items():
+        g.nodes[node]['pos'] = np.array(position)
+
+    return g
+
+
+def count_fingers(landmarks):
+    """Contar dedos levantados"""
+    finger_tips = [4, 8, 12, 16, 20]  # Pontas dos dedos
+    finger_pips = [3, 6, 10, 14, 18]  # Articulações intermediárias
+
+    fingers_up = 0
+
+    # Polegar (comparação horizontal)
+    if landmarks[finger_tips[0]].x > landmarks[finger_pips[0]].x:
+        fingers_up += 1
+
+    # Outros dedos (comparação vertical)
+    for i in range(1, 5):
+        if landmarks[finger_tips[i]].y < landmarks[finger_pips[i]].y:
+            fingers_up += 1
+
+    return fingers_up
+
+
+def detect_gestures(landmarks):
+    """Detectar gestos específicos: pinch, pinch_open, open_hand, closed_fist"""
+    if not landmarks:
+        return "none"
+
+    try:
+        # Contar dedos levantados
+        fingers_up = count_fingers(landmarks)
+
+        # Punho fechado
+        if fingers_up == 0:
+            return "closed_fist"
+        # Mão aberta
+        elif fingers_up >= 4:
+            return "open_hand"
+        else:
+            return "none"
+    except:
+        return "none"
+
+
+
+def find_free_port():
+    """Encontrar uma porta livre"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        s.listen(1)
+        port = s.getsockname()[1]
+    return port
 
 
 class HandMotionGraph3D:
     def __init__(self):
         # Inicializar MediaPipe
+        self.camera_theta = None
+        self.camera_radius = None
+        self.camera_phi = None
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
@@ -34,7 +98,7 @@ class HandMotionGraph3D:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
         # Criar grafo NetworkX
-        self.graph = self.create_graph()
+        self.graph = create_graph()
 
         # Controle da câmera/visualização 3D
         self.camera_eye = {'x': 1.5, 'y': 1.5, 'z': 1.5}
@@ -63,18 +127,6 @@ class HandMotionGraph3D:
         self.app = dash.Dash(__name__)
         self.setup_dash_app()
 
-    def create_graph(self):
-        """Criar um grafo NetworkX 3D"""
-        # Criar grafo aleatório geométrico 3D
-        G = nx.random_geometric_graph(20, 0.3, dim=3)
-
-        # Garantir que as posições estejam definidas
-        pos = nx.get_node_attributes(G, 'pos')
-        for node, position in pos.items():
-            G.nodes[node]['pos'] = np.array(position)
-
-        return G
-
     def setup_dash_app(self):
         """Configurar aplicação Dash para visualização em tempo real"""
         self.app.layout = html.Div([
@@ -88,7 +140,8 @@ class HandMotionGraph3D:
                         'padding': '15px',
                         'backgroundColor': '#ecf0f1',
                         'borderRadius': '10px',
-                        'marginBottom': '20px'
+                        'marginBottom': '20px',
+                        'boxShadow': '0 4px 16px rgba(44,62,80,0.08)',
                     }),
                     html.Div([
                         html.Button('Reset Visualização', id='reset-btn',
@@ -99,20 +152,49 @@ class HandMotionGraph3D:
                                         'padding': '10px 20px',
                                         'borderRadius': '5px',
                                         'cursor': 'pointer',
-                                        'fontSize': '16px'
+                                        'fontSize': '16px',
+                                        'marginTop': '10px',
                                     })
                     ])
-                ], style={'width': '25%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '20px'}),
+                ], style={
+                    'width': '320px',
+                    'minWidth': '240px',
+                    'maxWidth': '350px',
+                    'display': 'inline-block',
+                    'verticalAlign': 'top',
+                    'padding': '32px 24px 32px 24px',
+                    'margin': '32px 24px 32px 0',
+                    'backgroundColor': '#fff',
+                    'borderRadius': '14px',
+                    'boxShadow': '0 4px 24px rgba(44,62,80,0.10)',
+                }),
 
                 html.Div([
-                    dcc.Graph(id='3d-graph', style={'height': '600px'})
-                ], style={'width': '75%', 'display': 'inline-block'})
-            ]),
+                    dcc.Graph(id='3d-graph', style={'height': '600px', 'backgroundColor': '#fafbfc', 'borderRadius': '8px', 'boxShadow': '0 2px 12px rgba(44,62,80,0.08)'}),
+                ], style={
+                    'width': 'calc(100% - 350px)',
+                    'minWidth': '350px',
+                    'display': 'inline-block',
+                    'verticalAlign': 'top',
+                    'padding': '32px 24px 32px 0',
+                })
+            ], style={
+                'display': 'flex',
+                'flexDirection': 'row',
+                'justifyContent': 'center',
+                'alignItems': 'flex-start',
+                'width': '100%',
+                'maxWidth': '1400px',
+                'margin': '0 auto',
+                'backgroundColor': '#f6f8fa',
+                'borderRadius': '18px',
+                'boxShadow': '0 2px 24px rgba(44,62,80,0.06)',
+            }),
 
             # Componente oculto para atualização automática
             dcc.Interval(
                 id='interval-component',
-                interval=50,  # Atualizar a cada 50ms (20 FPS)
+                interval=200,  # Atualizar a cada 200ms (5 FPS)
                 n_intervals=0
             ),
 
@@ -176,7 +258,6 @@ class HandMotionGraph3D:
         node_colors = {
             'open_hand': '#2ecc71',  # Verde - Rotação
             'closed_fist': '#3498db',  # Azul - Movimento
-            'pinch': '#f39c12',  # Laranja - Zoom
             'none': '#e74c3c'  # Vermelho - Nenhum
         }
         color = node_colors.get(self.current_gesture, '#e74c3c')
@@ -226,12 +307,11 @@ class HandMotionGraph3D:
         return fig
 
     def get_status_info(self):
-        """Obter informações de status"""
+        """Obter informações de estatus"""
         status_color = '#27ae60' if self.hand_detected else '#e74c3c'
         gesture_icons = {
             'open_hand': '✋',
             'closed_fist': '✊',
-            'pinch': '🤏',
             'none': '❌'
         }
 
@@ -269,7 +349,7 @@ class HandMotionGraph3D:
                        style={'margin': '5px 0', 'fontWeight': 'bold', 'color': '#2ecc71'}),
                 html.P("• Esquerda/Direita: Rotaciona horizontalmente",
                        style={'margin': '2px 0 2px 20px', 'fontSize': '11px'}),
-                html.P("• Cima/Baixo: Rotaciona verticalmente",
+                html.P("• Cima/Baixo: Zoom in/ Zoom out",
                        style={'margin': '2px 0 2px 20px', 'fontSize': '11px'}),
             ]),
 
@@ -280,152 +360,83 @@ class HandMotionGraph3D:
                        style={'margin': '2px 0 2px 20px', 'fontSize': '11px'}),
             ]),
 
-            html.Div([
-                html.P("🤏 PINÇA - Zoom:",
-                       style={'margin': '5px 0', 'fontWeight': 'bold', 'color': '#f39c12'}),
-                html.P("• Fechar pinça: Zoom in",
-                       style={'margin': '2px 0 2px 20px', 'fontSize': '11px'}),
-                html.P("• Abrir pinça: Zoom out",
-                       style={'margin': '2px 0 2px 20px', 'fontSize': '11px'}),
-            ]),
-
             html.Hr(),
             html.P(f"🔍 Zoom: {self.zoom_factor:.2f}", style={'margin': '2px 0'}),
             html.P(f"📊 Nós: {len(self.graph.nodes())}", style={'margin': '2px 0'}),
             html.P(f"📊 Arestas: {len(self.graph.edges())}", style={'margin': '2px 0'})
         ])
 
-    def detect_gestures(self, landmarks):
-        """Detectar gestos específicos"""
-        if not landmarks:
-            return "none"
-
-        try:
-            # Contar dedos levantados
-            fingers_up = self.count_fingers(landmarks)
-
-            # Detectar pinça (polegar e indicador próximos)
-            thumb_tip = landmarks[4]
-            index_tip = landmarks[8]
-            pinch_distance = math.sqrt(
-                (thumb_tip.x - index_tip.x) ** 2 +
-                (thumb_tip.y - index_tip.y) ** 2
-            )
-
-            # Se pinça está sendo feita (dedos muito próximos)
-            if pinch_distance < 0.05:
-                return "pinch"
-            elif fingers_up == 0:
-                return "closed_fist"
-            elif fingers_up >= 4:
-                return "open_hand"
-            else:
-                return "none"
-
-        except:
-            return "none"
-
-    def count_fingers(self, landmarks):
-        """Contar dedos levantados"""
-        finger_tips = [4, 8, 12, 16, 20]  # Pontas dos dedos
-        finger_pips = [3, 6, 10, 14, 18]  # Articulações intermediárias
-
-        fingers_up = 0
-
-        # Polegar (comparação horizontal)
-        if landmarks[finger_tips[0]].x > landmarks[finger_pips[0]].x:
-            fingers_up += 1
-
-        # Outros dedos (comparação vertical)
-        for i in range(1, 5):
-            if landmarks[finger_tips[i]].y < landmarks[finger_pips[i]].y:
-                fingers_up += 1
-
-        return fingers_up
-
-    def get_pinch_distance(self, landmarks):
-        """Calcular distância da pinça para controle de zoom"""
-        thumb_tip = landmarks[4]
-        index_tip = landmarks[8]
-
-        distance = math.sqrt(
-            (thumb_tip.x - index_tip.x) ** 2 +
-            (thumb_tip.y - index_tip.y) ** 2 +
-            (thumb_tip.z - index_tip.z) ** 2
-        )
-
-        return distance
-
     def update_visualization_controls(self, hand_data, gesture):
-        """Atualizar controles da visualização baseado na mão e gesto"""
+        """Atualizar controles da visualização baseado na mão e gesto (modo extremidade: giro/pan/zoom)"""
         if not hand_data:
             return
 
-        # Posição atual da mão
-        current_x = hand_data['x']
-        current_y = hand_data['y']
+        # Inicializar atributos esféricos se não existirem ou estiverem None
+        if (not hasattr(self, 'camera_radius') or self.camera_radius is None or
+            not hasattr(self, 'camera_theta') or self.camera_theta is None or
+            not hasattr(self, 'camera_phi') or self.camera_phi is None):
+            x, y, z = self.camera_eye['x'], self.camera_eye['y'], self.camera_eye['z']
+            self.camera_radius = math.sqrt(x**2 + y**2 + z**2)
+            self.camera_theta = math.atan2(y, math.sqrt(x**2 + z**2))
+            self.camera_phi = math.atan2(x, z)
 
-        # Calcular movimento se houver posição anterior
-        if self.previous_hand_position:
-            dx = current_x - self.previous_hand_position['x']
-            dy = current_y - self.previous_hand_position['y']
+        x = hand_data['x']
+        y = hand_data['y']
+        pan_step = 0.12
+        rot_step = 0.10
+        zoom_step = 0.12
 
-            # Aplicar suavização
-            dx *= self.smoothing_factor
-            dy *= self.smoothing_factor
+        # --- GIRO/ZOOM (mão aberta nas extremidades) ---
+        if gesture == "open_hand":
+            # Esquerda/Direita: gira azimute
+            if x < 0.15:
+                self.camera_phi -= rot_step
+            elif x > 0.85:
+                self.camera_phi += rot_step
+            # Cima/Baixo: gira elevação
+            if 0.25 <= y <= 0.75:
+                pass  # Só gira se não estiver nas bordas verticais
+            if y < 0.25:
+                self.camera_theta -= rot_step
+                # Zoom in se mão aberta no topo
+                self.camera_radius = max(1.0, self.camera_radius - zoom_step)
+                print(f'[ZOOM DEBUG] camera_radius (in): {self.camera_radius}')
+            elif y > 0.75:
+                self.camera_theta += rot_step
+                # Zoom out se mão aberta na base
+                self.camera_radius = min(30.0, self.camera_radius + zoom_step)
+                print(f'[ZOOM DEBUG] camera_radius (out): {self.camera_radius}')
+            # Limitar theta
+            self.camera_theta = max(-math.pi/2 + 0.05, min(math.pi/2 - 0.05, self.camera_theta))
 
-            if gesture == "open_hand":
-                # MÃO ABERTA: Rotação da visualização
-                # Movimento horizontal da mão = rotação horizontal (ao redor do eixo Y)
-                # Movimento vertical da mão = rotação vertical (ao redor do eixo X)
+        # --- PAN (mão fechada nas extremidades) ---
+        elif gesture == "closed_fist":
+            moved = False
+            if x < 0.25:
+                self.camera_center['x'] -= pan_step
+                moved = True
+            elif x > 0.75:
+                self.camera_center['x'] += pan_step
+                moved = True
+            if y < 0.25:
+                self.camera_center['y'] += pan_step
+                moved = True
+            elif y > 0.75:
+                self.camera_center['y'] -= pan_step
+                moved = True
+            if moved:
+                print(f"[PAN DEBUG] camera_center: {self.camera_center}")
 
-                # Rotação horizontal (esquerda/direita)
-                if abs(dx) > 0.001:
-                    angle_y = dx * self.rotation_sensitivity
-                    # Rotacionar câmera ao redor do eixo Y
-                    cos_y = math.cos(angle_y)
-                    sin_y = math.sin(angle_y)
+        # Atualizar posição da câmera (esférico → cartesiano)
+        r = self.camera_radius * self.zoom_factor
+        theta = self.camera_theta
+        phi = self.camera_phi
+        self.camera_eye['x'] = r * math.sin(theta) * math.sin(phi)
+        self.camera_eye['y'] = r * math.cos(theta)
+        self.camera_eye['z'] = r * math.sin(theta) * math.cos(phi)
 
-                    new_x = self.camera_eye['x'] * cos_y - self.camera_eye['z'] * sin_y
-                    new_z = self.camera_eye['x'] * sin_y + self.camera_eye['z'] * cos_y
-
-                    self.camera_eye['x'] = new_x
-                    self.camera_eye['z'] = new_z
-
-                # Rotação vertical (cima/baixo)
-                if abs(dy) > 0.001:
-                    angle_x = -dy * self.rotation_sensitivity
-                    # Rotacionar câmera ao redor do eixo X
-                    cos_x = math.cos(angle_x)
-                    sin_x = math.sin(angle_x)
-
-                    new_y = self.camera_eye['y'] * cos_x - self.camera_eye['z'] * sin_x
-                    new_z = self.camera_eye['y'] * sin_x + self.camera_eye['z'] * cos_x
-
-                    self.camera_eye['y'] = new_y
-                    self.camera_eye['z'] = new_z
-
-            elif gesture == "closed_fist":
-                # MÃO FECHADA: Movimento da visualização
-                # Move o centro da visualização para onde a mão aponta
-                self.camera_center['x'] += dx * self.movement_sensitivity
-                self.camera_center['y'] -= dy * self.movement_sensitivity  # Inverter Y
-
-        # Controle de zoom com pinça
-        if gesture == "pinch" and 'pinch_distance' in hand_data:
-            if hasattr(self, 'previous_pinch_distance'):
-                # Calcular mudança na distância da pinça
-                distance_change = hand_data['pinch_distance'] - self.previous_pinch_distance
-
-                # Aplicar zoom baseado na mudança da distância
-                if abs(distance_change) > 0.001:
-                    zoom_change = distance_change * self.zoom_sensitivity
-                    self.zoom_factor = max(0.1, min(5.0, self.zoom_factor + zoom_change))
-
-            self.previous_pinch_distance = hand_data['pinch_distance']
-
-        # Atualizar posição anterior
-        self.previous_hand_position = {'x': current_x, 'y': current_y}
+        # Atualizar posição anterior (não usado para lógica de extremidade)
+        self.previous_hand_position = {'x': x, 'y': y}
 
     def process_frame(self):
         """Processar frame da câmera"""
@@ -452,7 +463,7 @@ class HandMotionGraph3D:
                 )
 
                 # Detectar gesto
-                gesture = self.detect_gestures(hand_landmarks.landmark)
+                gesture = detect_gestures(hand_landmarks.landmark)
                 self.current_gesture = gesture
 
                 # Extrair posição da mão (usar ponto do pulso como referência)
@@ -466,9 +477,6 @@ class HandMotionGraph3D:
                 # Atualizar posição da mão para exibição
                 self.hand_position = {'x': wrist.x, 'y': wrist.y}
 
-                # Se for pinça, adicionar distância
-                if gesture == "pinch":
-                    hand_data['pinch_distance'] = self.get_pinch_distance(hand_landmarks.landmark)
 
                 # Atualizar controles da visualização
                 self.update_visualization_controls(hand_data, gesture)
@@ -519,8 +527,10 @@ class HandMotionGraph3D:
 
     def reset_visualization(self):
         """Resetar visualização do grafo"""
+        print("[RESET DEBUG] reset_visualization foi chamado!")
         self.camera_eye = {'x': 1.5, 'y': 1.5, 'z': 1.5}
         self.camera_center = {'x': 0, 'y': 0, 'z': 0}
+        self.camera_radius = 5.0
         self.zoom_factor = 1.0
         self.current_gesture = "none"
         self.previous_hand_position = None
@@ -542,19 +552,13 @@ class HandMotionGraph3D:
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     self.running = False
-                    break
+                    self.cleanup()
+                    import sys
+                    sys.exit(0)
                 elif key == ord('r'):
                     self.reset_visualization()
 
             time.sleep(0.033)  # ~30 FPS
-
-    def find_free_port(self):
-        """Encontrar uma porta livre"""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0))
-            s.listen(1)
-            port = s.getsockname()[1]
-        return port
 
     def run(self):
         """Executar aplicação principal"""
@@ -591,13 +595,18 @@ class HandMotionGraph3D:
             camera_thread.start()
 
             # Encontrar porta livre
-            port = self.find_free_port()
+            port = find_free_port()
 
             print(f"🌐 Iniciando servidor web na porta {port}...")
             print(f"🔗 Acesse: http://localhost:{port}")
 
             # Abrir navegador automaticamente
             webbrowser.open(f'http://localhost:{port}')
+
+            # Suprimir logs HTTP do Flask/Dash
+            import logging
+            log = logging.getLogger('werkzeug')
+            log.setLevel(logging.ERROR)
 
             # Executar Dash app
             self.app.run(debug=False, port=port, host='0.0.0.0')
