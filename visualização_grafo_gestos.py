@@ -13,6 +13,7 @@ import numpy as np
 import plotly.graph_objects as go
 from dash import dcc, html, Input, Output
 
+camnum = 0
 
 def create_graph():
     """Criar um grafo NetworkX 3D"""
@@ -27,47 +28,75 @@ def create_graph():
     return g
 
 
+def euclidean_distance(p1, p2):
+    return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2)
+
 def count_fingers(landmarks):
-    """Contar dedos levantados"""
-    finger_tips = [4, 8, 12, 16, 20]  # Pontas dos dedos
-    finger_pips = [3, 6, 10, 14, 18]  # Articulações intermediárias
+    """Conta dedos levantados considerando flexão leve"""
+    finger_tips = [4, 8, 12, 16, 20]
+    finger_pips = [3, 6, 10, 14, 18]
 
     fingers_up = 0
 
     # Polegar (comparação horizontal)
-    if landmarks[finger_tips[0]].x > landmarks[finger_pips[0]].x:
+    thumb_tip = landmarks[finger_tips[0]]
+    thumb_pip = landmarks[finger_pips[0]]
+    wrist = landmarks[0]
+    if thumb_tip.x > wrist.x:  # assume mão direita. Inverter sinal se for mão esquerda
         fingers_up += 1
 
     # Outros dedos (comparação vertical)
     for i in range(1, 5):
-        if landmarks[finger_tips[i]].y < landmarks[finger_pips[i]].y:
+        tip = landmarks[finger_tips[i]]
+        pip = landmarks[finger_pips[i]]
+        if tip.y < pip.y * 0.95:  # Pequena margem para evitar ruídos
             fingers_up += 1
 
     return fingers_up
 
+def is_closed_fist(landmarks):
+    """Verifica se todos os dedos estão próximos ao punho"""
+    wrist = landmarks[0]
+    distances = []
+    for tip_index in [4, 8, 12, 16, 20]:
+        tip = landmarks[tip_index]
+        distances.append(euclidean_distance(tip, wrist))
 
-def detect_gestures(landmarks):
-    """Detectar gestos específicos: pinch, pinch_open, open_hand, closed_fist"""
-    if not landmarks:
+    avg_dist = sum(distances) / len(distances)
+    return avg_dist < 0.1  # Ajuste sensível: entre 0.08 e 0.12
+
+def detect_gestures(landmarks, debug=False):
+    """
+    Detecta gestos:
+    - 'closed_fist' para mão fechada
+    - 'open_hand' para mão aberta
+    - 'none' se não identificar
+    """
+    if not landmarks or len(landmarks) < 21:
         return "none"
 
     try:
-        # Contar dedos levantados
+        if is_closed_fist(landmarks):
+            if debug:
+                print("Avg dist dedos-punho: CLOSED")
+            return "closed_fist"
+
         fingers_up = count_fingers(landmarks)
 
-        # Punho fechado
+        if debug:
+            print(f"Dedos levantados: {fingers_up}")
+
         if fingers_up == 0:
             return "closed_fist"
-        # Mão aberta
         elif fingers_up >= 4:
             return "open_hand"
         else:
             return "none"
-    except:
+    except Exception as e:
+        if debug:
+            print("Erro na detecção:", e)
         return "none"
-
-
-
+    
 def find_free_port():
     """Encontrar uma porta livre"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -77,7 +106,18 @@ def find_free_port():
     return port
 
 
+
+
 class HandMotionGraph3D:
+
+    @staticmethod
+    def normalize_vector(v):
+        #return v
+        norm = math.sqrt(v['x']**2 + v['y']**2 + v['z']**2)
+        if norm == 0:
+            return v
+        return {k: v[k]/norm for k in v}
+
     def __init__(self):
         # Inicializar MediaPipe
         self.camera_theta = None
@@ -93,7 +133,7 @@ class HandMotionGraph3D:
         self.mp_draw = mp.solutions.drawing_utils
 
         # Configurações de vídeo
-        self.cap = cv2.VideoCapture(0)
+        self.cap = cv2.VideoCapture(camnum)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
@@ -101,7 +141,14 @@ class HandMotionGraph3D:
         self.graph = create_graph()
 
         # Controle da câmera/visualização 3D
-        self.camera_eye = {'x': 1.5, 'y': 1.5, 'z': 1.5}
+        #self.camera_eye = {'x': 1.5, 'y': 1.5, 'z': 1.5}
+        self.camera_eye = {'x': 1, 'y': 1, 'z': 1}
+
+
+        self.camera_eye = self.normalize_vector(self.camera_eye) ###
+
+
+
         self.camera_center = {'x': 0, 'y': 0, 'z': 0}
         self.zoom_factor = 1.0
 
@@ -408,8 +455,16 @@ class HandMotionGraph3D:
                 print(f'[ZOOM DEBUG] camera_radius (out): {self.camera_radius}')
             # Limitar theta
             self.camera_theta = max(-math.pi/2 + 0.05, min(math.pi/2 - 0.05, self.camera_theta))
-
-        # --- PAN (mão fechada nas extremidades) ---
+                # --- PAN (mão fechada nas extremidades) ---
+            '''
+            elif gesture == "closed_fist":
+                if self.previous_hand_position:
+                    dx = x - self.previous_hand_position['x']
+                    dy = y - self.previous_hand_position['y']
+                    self.camera_center['x'] -= dx * self.movement_sensitivity
+                    self.camera_center['y'] += dy * self.movement_sensitivity
+                    print(f"[PAN DEBUG] Δx: {dx:.3f}, Δy: {dy:.3f}")
+            '''
         elif gesture == "closed_fist":
             moved = False
             if x < 0.25:
@@ -426,6 +481,7 @@ class HandMotionGraph3D:
                 moved = True
             if moved:
                 print(f"[PAN DEBUG] camera_center: {self.camera_center}")
+        ''''''
 
         # Atualizar posição da câmera (esférico → cartesiano)
         r = self.camera_radius * self.zoom_factor
@@ -435,6 +491,24 @@ class HandMotionGraph3D:
         self.camera_eye['y'] = r * math.cos(theta)
         self.camera_eye['z'] = r * math.sin(theta) * math.cos(phi)
 
+        ''' '''
+        new_eye_x = r * math.sin(theta) * math.sin(phi)
+        new_eye_y = r * math.cos(theta)
+        new_eye_z = r * math.sin(theta) * math.cos(phi)
+
+        #### 
+        '''
+        if self.previous_hand_position:
+            alpha = self.smoothing_factor
+            self.camera_eye['x'] = (1 - alpha) * self.camera_eye['x'] + alpha * new_eye_x
+            self.camera_eye['y'] = (1 - alpha) * self.camera_eye['y'] + alpha * new_eye_y
+            self.camera_eye['z'] = (1 - alpha) * self.camera_eye['z'] + alpha * new_eye_z
+        else:
+            self.camera_eye['x'] = new_eye_x
+            self.camera_eye['y'] = new_eye_y
+            self.camera_eye['z'] = new_eye_z
+        ####
+        '''
         # Atualizar posição anterior (não usado para lógica de extremidade)
         self.previous_hand_position = {'x': x, 'y': y}
 
@@ -528,7 +602,15 @@ class HandMotionGraph3D:
     def reset_visualization(self):
         """Resetar visualização do grafo"""
         print("[RESET DEBUG] reset_visualization foi chamado!")
-        self.camera_eye = {'x': 1.5, 'y': 1.5, 'z': 1.5}
+        #self.camera_eye = {'x': 1.5, 'y': 1.5, 'z': 1.5}
+
+
+        self.camera_eye = {'x': 1, 'y': 1, 'z': 1}
+
+        self.camera_eye = self.normalize_vector(self.camera_eye) ###
+
+
+
         self.camera_center = {'x': 0, 'y': 0, 'z': 0}
         self.camera_radius = 5.0
         self.zoom_factor = 1.0
@@ -558,7 +640,8 @@ class HandMotionGraph3D:
                 elif key == ord('r'):
                     self.reset_visualization()
 
-            time.sleep(0.033)  # ~30 FPS
+            #time.sleep(0.033)  # ~30 FPS
+            cv2.waitKey(1)
 
     def run(self):
         """Executar aplicação principal"""
@@ -631,8 +714,11 @@ class HandMotionGraph3D:
 def main():
     """Função principal"""
     try:
+        
+        camnum = int(input("Digite o número da câmera (e.g.: 0): "))
+
         # Verificar se a câmera está disponível
-        test_cap = cv2.VideoCapture(0)
+        test_cap = cv2.VideoCapture(camnum)
         if not test_cap.isOpened():
             print("❌ Erro: Não foi possível acessar a câmera")
             print("💡 Certifique-se de que:")
