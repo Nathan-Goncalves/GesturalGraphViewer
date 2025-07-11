@@ -1,8 +1,5 @@
-cd C:\Users\Cleiton\Documents\IFES\BSI 2025-01\INTELIGENCIA ARTIFICIAL - SERGIO NERY\TRABALHO FINAL - IA\GesturalGraphViewer3D
-
 
 conda create -n GesturalGraphViewer3D_env python=3.11
-
 
 conda activate GesturalGraphViewer3D_env
 
